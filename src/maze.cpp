@@ -1,6 +1,9 @@
 #include <iostream>
+#include <Windows.h>
 #include <cstdlib>
 #include <ctime>
+
+HANDLE hStdout, hStdin;
 
 enum class MazeState {
 	WALL,
@@ -15,30 +18,97 @@ struct Direction {
 	int deltaCol;
 };
 
-void generateMaze(int nRows, int nCols);
+COORD generateMaze(int nRows, int nCols);
 void initializeMaze(MazeState **maze2D, int nRows, int nCols, int& startRow, int& startCol, int& endRow, int& endCol);
 void createPath(MazeState **maze2D, int nRows, int nCols, int activeRow, int activeCol);
 void printMaze(MazeState **maze2D, int nRows, int nCols);
+bool isValidMove(COORD position, int nRows, int nCols);
+void move(COORD& currentPos, COORD& nextPos);
+void changeOldMark(COORD position);
+void setNewMark(COORD position);
+bool isSolved(COORD position);
 
 int main()
 {
+	//Maze generator variables
 	int nRows, nCols;
-	std::cout << "Enter number of rows: ";
-	std::cin >> nRows;
-	std::cout << "Enter number of columns: ";
-	std::cin >> nCols;
-	system("cls");
+
+	//Game display properties
+	HWND consoleWindow;
+
+	//Input event information for maze traversal
+	INPUT_RECORD events[1], event;
+	KEY_EVENT_RECORD keyEvent;
+	DWORD nReadEvents;
+
+	//Other maze traversal variables
+	COORD currentPos, nextPos;
+	bool newMaze = true;
+	bool isArrowKey;
+
+	//Game setup
+	hStdin = GetStdHandle(STD_INPUT_HANDLE);
+	hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+	consoleWindow = GetConsoleWindow();
 
 	srand(static_cast<unsigned int>(time(NULL)));
 
-	generateMaze(nRows, nCols);
+	while (newMaze) {
+		//Set up maze
+		system("cls");
+		std::cout << "Enter number of rows: ";
+		std::cin >> nRows;
+		std::cout << "Enter number of columns: ";
+		std::cin >> nCols;
+		system("cls");
 
-	system("pause");
+		currentPos = generateMaze(nRows, nCols);
+
+		//Gameplay
+		while (true) {
+			//Read event and process pressed arrow key
+			ReadConsoleInput(hStdin, events, 1, &nReadEvents);
+			event = events[0];
+			if (event.EventType == KEY_EVENT) {
+				keyEvent = event.Event.KeyEvent;
+				if (keyEvent.bKeyDown) {
+					isArrowKey = true;
+					switch (keyEvent.wVirtualKeyCode) {
+						case VK_RIGHT:
+							nextPos = { currentPos.X + 1, currentPos.Y };
+							break;
+						case VK_LEFT:
+							nextPos = { currentPos.X - 1, currentPos.Y };
+							break;
+						case VK_UP:
+							nextPos = { currentPos.X, currentPos.Y - 1 };
+							break;
+						case VK_DOWN:
+							nextPos = { currentPos.X, currentPos.Y + 1 };
+							break;
+						default: //Non-arrow key
+							isArrowKey = false;
+							break;
+					}
+
+					if (isArrowKey && isValidMove(nextPos, nRows, nCols)) { //Move position indicator?
+						move(currentPos, nextPos);
+
+						if (isSolved(currentPos)) { //Maze solved?
+							newMaze = MessageBox(consoleWindow, "Maze solved!!!\n Replay?", "Maze Solved.", MB_YESNO | MB_ICONQUESTION) == IDYES ? true : false;
+							break;
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return 0;
 }
 
 //Function generates a new maze for a given input # of rows and columns
-void generateMaze(int nRows, int nCols)
+COORD generateMaze(int nRows, int nCols)
 {
 	//dynamically create 2D array for maze states in contiguous memory
 	MazeState **maze2D = new MazeState*[nRows];		  //allocate memory for 2D array as an array of pointers to row subarrays
@@ -54,6 +124,8 @@ void generateMaze(int nRows, int nCols)
 	createPath(maze2D, nRows, nCols, firstRow, firstCol);
 
 	printMaze(maze2D, nRows, nCols);
+
+	return { static_cast<SHORT>(startCol), static_cast<SHORT>(startRow) };
 }
 
 //Function performs initialization steps for maze generation
@@ -138,17 +210,94 @@ void createPath(MazeState **maze2D, int nRows, int nCols, int activeRow, int act
 //Function to print maze
 void printMaze(MazeState **maze2D, int nRows, int nCols)
 {
+	COORD activeCell;
+	DWORD nWriteChar;
+	WORD attributes;
+
 	for (int row = 0; row < nRows; row++) {
 		for (int col = 0; col < nCols; col++) {
-			if (maze2D[row][col] == MazeState::WALL)
-				std::cout << /*std::setw(2) << */'#';
-			else if (maze2D[row][col] == MazeState::START)
+			activeCell = { static_cast<SHORT>(col), static_cast<SHORT>(row) };
+			
+			if (maze2D[row][col] == MazeState::WALL) {	
+				attributes = 255; //White letters on white background;
+				std::cout << '#';
+			}
+			else if (maze2D[row][col] == MazeState::START) {
+				attributes = BACKGROUND_GREEN | BACKGROUND_INTENSITY; //Balck letters on green background;
 				std::cout << 'S';
-			else if (maze2D[row][col] == MazeState::END)
+			}
+			else if (maze2D[row][col] == MazeState::END) {
+				attributes = BACKGROUND_RED | BACKGROUND_INTENSITY; //Black letters on red background;
 				std::cout << 'E';
-			else
+			}
+			else {
+				attributes = 15; //White letters on black background;
 				std::cout << ' ';
+			}
+
+			WriteConsoleOutputAttribute(hStdout, &attributes, 1, activeCell, &nWriteChar);
 		}
 		std::cout << std::endl;
 	}
+}
+
+//Function checks if attempted move is valid (i.e., not into wall, out-of-bounds, or re-traced onto start position)
+bool isValidMove(COORD position, int nRows, int nCols)
+{
+	bool oob = false;
+	int row = static_cast<int>(position.Y);
+	int col = static_cast<int>(position.X);
+	TCHAR character;
+	DWORD nReadChar;
+
+	if (row < 0 || row > nRows - 1 || col < 0 || col > nCols - 1) oob = true;
+	ReadConsoleOutputCharacter(hStdout, &character, 1, position, &nReadChar);
+
+	return (character != '#' && character != 'S' && !oob);
+}
+
+//Function delegates move display operations and updates position indicator
+void move(COORD& currentPos, COORD& nextPos)
+{
+	TCHAR character;
+	DWORD nReadChar;
+
+	ReadConsoleOutputCharacter(hStdout, &character, 1, currentPos, &nReadChar);
+	if (character != 'S') changeOldMark(currentPos);
+
+	ReadConsoleOutputCharacter(hStdout, &character, 1, nextPos, &nReadChar);
+	if (character != 'E') setNewMark(nextPos);
+
+	currentPos = nextPos;
+}
+
+//Function changes display of previous position indicator 
+void changeOldMark(COORD position)
+{
+	DWORD nWriteChar;
+	WORD attributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY; //Yellow letters on black background
+
+	WriteConsoleOutputAttribute(hStdout, &attributes, 1, position, &nWriteChar);
+	WriteConsoleOutputCharacter(hStdout, "o", 1, position, &nWriteChar);
+}
+
+//Function displays current position indicator
+void setNewMark(COORD position)
+{
+	DWORD nWriteChar;
+	WORD attributes = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY; //Cyan letters on black background
+
+
+	WriteConsoleOutputAttribute(hStdout, &attributes, 1, position, &nWriteChar);
+	WriteConsoleOutputCharacter(hStdout, "X", 1, position, &nWriteChar);
+}
+
+//Function tests if maze is solved
+bool isSolved(COORD position)
+{
+	TCHAR character;
+	DWORD nReadChar;
+
+	ReadConsoleOutputCharacter(hStdout, &character, 1, position, &nReadChar);
+	return (character == 'E');
 }
