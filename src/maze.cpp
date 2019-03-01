@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <ctime>
 
+using namespace std;
+
 HANDLE hStdout, hStdin;
 
 enum class MazeState {
@@ -10,7 +12,9 @@ enum class MazeState {
 	PATH,
 	START,
 	END,
-	UNASSIGNED
+	TRAVERSED, //For maze solution finder only
+	SOLUTION,
+	UNASSIGNED //For maze generator only
 };
 
 struct Direction {
@@ -39,7 +43,7 @@ public:
 		int firstRow = 1 + (2 * (rand() % (nRows / 2))); //First active row for path creator is odd-indexed
 		int firstCol = 1 + (2 * (rand() % (nCols / 2))); //First active column for path creator is odd-indexed
 		createPath(firstRow, firstCol);
-
+		findSolution(startRow, startCol);
 		printMaze();
 	}
 
@@ -100,23 +104,25 @@ public:
 	void createPath(int activeRow, int activeCol)
 	{
 		int nRemainingDirections;
+		const static Direction allDirections[4] = { {-2, 0}, {2, 0}, {0, -2}, {0, 2} }; //Up, down, left, right
 		Direction direction, remainingDirections[4];
+		int moveRow, moveCol;
+		bool oob;
 
 		maze2D[activeRow][activeCol] = MazeState::PATH;
 
 		while (true) {
 			nRemainingDirections = 0;
 
-			//Find directions in which a path has not yet been connected
-			if (activeRow - 2 >= 0 && maze2D[activeRow - 2][activeCol] == MazeState::UNASSIGNED)		 //Up
-				remainingDirections[nRemainingDirections++] = { -2, 0 };
-			if (activeRow + 2 <= nRows - 1 && maze2D[activeRow + 2][activeCol] == MazeState::UNASSIGNED) //Down
-				remainingDirections[nRemainingDirections++] = { 2, 0 };
-			if (activeCol - 2 >= 0 && maze2D[activeRow][activeCol - 2] == MazeState::UNASSIGNED)		 //Left
-				remainingDirections[nRemainingDirections++] = { 0, -2 };
-			if (activeCol + 2 <= nCols - 1 && maze2D[activeRow][activeCol + 2] == MazeState::UNASSIGNED) //Right
-				remainingDirections[nRemainingDirections++] = { 0, 2 };
-
+			//Find in-bounds directions in which a path has not yet been connected
+			for (int i = 0; i <= 3; i++) {
+				moveRow = activeRow + allDirections[i].deltaRow;
+				moveCol = activeCol + allDirections[i].deltaCol;
+				oob = !(moveRow >= 0 && moveRow <= nRows - 1 && moveCol >= 0 && moveCol <= nCols - 1);
+				if (!oob && maze2D[moveRow][moveCol] == MazeState::UNASSIGNED)
+					remainingDirections[nRemainingDirections++] = allDirections[i];
+			}
+			
 			if (nRemainingDirections == 0) return; //All directions have a connected path
 			else {
 				direction = remainingDirections[rand() % nRemainingDirections];
@@ -128,7 +134,34 @@ public:
 			}
 		}
 	}
+	
+	//Recursive member function finds solution to maze
+	bool findSolution(int activeRow, int activeCol)
+	{
+		const static Direction allDirections[4] = { {-1, 0}, {1, 0}, {0, -1}, {0, 1} }; //Up, down, left, right
+		int moveRow, moveCol;
+		bool oob;
 
+		//Cycle through possible in-bounds moves along yet untraversed path
+		for (int i = 0; i <= 3; i++) {
+			moveRow = activeRow + allDirections[i].deltaRow;
+			moveCol = activeCol + allDirections[i].deltaCol;
+			oob = !(moveRow >= 0 && moveRow <= nRows - 1 && moveCol >= 0 && moveCol <= nCols - 1);
+			if (oob) continue;
+			if (maze2D[moveRow][moveCol] == MazeState::END) //Solution found?
+				return true;
+			else if (maze2D[moveRow][moveCol] == MazeState::PATH) {
+				maze2D[moveRow][moveCol] = MazeState::TRAVERSED;
+				if (findSolution(moveRow, moveCol)) {		//Recurse and mark path when solution is found
+					maze2D[moveRow][moveCol] = MazeState::SOLUTION;
+					return true;
+				}
+			}
+		}
+
+		return false; //Dead-end - no possible moves remain
+	}
+	   	 
 	//Member function prints maze
 	void printMaze()
 	{
@@ -142,24 +175,42 @@ public:
 
 				if (maze2D[row][col] == MazeState::WALL) {
 					attributes = 255; //White letters on white background;
-					std::cout << '#';
+					cout << '#';
 				}
 				else if (maze2D[row][col] == MazeState::START) {
-					attributes = BACKGROUND_GREEN | BACKGROUND_INTENSITY; //Balck letters on green background;
-					std::cout << 'S';
+					attributes = BACKGROUND_GREEN | BACKGROUND_INTENSITY; //Black letters on green background;
+					cout << 'S';
 				}
 				else if (maze2D[row][col] == MazeState::END) {
 					attributes = BACKGROUND_RED | BACKGROUND_INTENSITY; //Black letters on red background;
-					std::cout << 'E';
+					cout << 'E';
 				}
 				else {
 					attributes = 15; //White letters on black background;
-					std::cout << ' ';
+					cout << ' ';
 				}
 
 				WriteConsoleOutputAttribute(hStdout, &attributes, 1, activeCell, &nWriteChar);
 			}
-			std::cout << std::endl;
+			cout << endl;
+		}
+	}
+
+	//Member function prints solution to maze
+	void printSolution() {
+		COORD activeCell;
+		DWORD nWriteChar;
+		WORD attributes = FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_INTENSITY; //Cyan letters on black background
+		
+		for (int row = 0; row < nRows; row++) {
+			for (int col = 0; col < nCols; col++) {
+				activeCell = { static_cast<SHORT>(col), static_cast<SHORT>(row) };
+
+				if (maze2D[row][col] == MazeState::SOLUTION) {
+					WriteConsoleOutputAttribute(hStdout, &attributes, 1, activeCell, &nWriteChar);
+					WriteConsoleOutputCharacter(hStdout, "o", 1, activeCell, &nWriteChar);
+				}
+			}
 		}
 	}
 
@@ -179,6 +230,7 @@ int main()
 {
 	//Maze generator variables
 	int nRows, nCols;
+	int maxRows = 25, maxCols = 25;
 
 	//Game display properties
 	HWND consoleWindow;
@@ -203,11 +255,42 @@ int main()
 	while (newMaze) {
 		//Set up maze
 		system("cls");
-		std::cout << "Enter number of rows: ";
-		std::cin >> nRows;
-		std::cout << "Enter number of columns: ";
-		std::cin >> nCols;
+
+		cout << "Enter number of path rows (1-" << maxRows << "): ";
+		cin >> nRows;
+		while (true) {
+			if (cin.fail() || nRows <= 0 || nRows > maxRows) { //Improper data type, overflow, or out-of-limits
+				cout << "Invalid input. Re-enter number of path rows (1-" << maxRows << "): ";
+				cin.clear();
+				cin.ignore(32767, '\n');
+				cin >> nRows;
+			}
+			else {
+				cin.ignore(32767, '\n');
+				break;
+			}
+		}
+
+		cout << "Enter number of path columns (1-" << maxCols << "): ";
+		cin >> nCols;
+		while (true) {
+			if (cin.fail() || nCols <= 0 || nCols > maxCols) { //Improper data type, overflow, or out-of-limits
+				cout << "Invalid input. Re-enter number of path columns (1-" << maxCols << "): ";
+				cin.clear();
+				cin.ignore(32767, '\n');
+				cin >> nCols;
+			}
+			else {
+				cin.ignore(32767, '\n');
+				break;
+			}
+		}
+
 		system("cls");
+
+		//Update from path rows/columns to total rows/columns (path + walls)
+		nRows = nRows * 2 + 1;
+		nCols = nCols * 2 + 1;
 
 		Maze maze(nRows, nCols);
 		currentPos = maze.getStartPos();
@@ -243,6 +326,7 @@ int main()
 						move(currentPos, nextPos);
 
 						if (isSolved(currentPos)) { //Maze solved?
+							maze.printSolution();
 							newMaze = MessageBox(consoleWindow, "Maze solved!!!\n Replay?", "Maze Solved.", MB_YESNO | MB_ICONQUESTION) == IDYES ? true : false;
 							break;
 						}
